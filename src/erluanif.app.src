@@ -1,0 +1,6 @@
+{application, erluanif, [
+    {description, "erlang lua nif."},
+    {vsn, git},
+    {registered, []},
+    {applications, [kernel, stdlib]}
+]}.
