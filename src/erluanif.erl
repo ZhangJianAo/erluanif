@@ -1,7 +1,8 @@
 -module(erluanif).
 
 -export([new/0,
-         myfunction/1]).
+	 delete/1,
+	 dostring/2]).
 
 -on_load(init/0).
 
@@ -27,8 +28,27 @@ init() ->
 new() ->
     ?nif_stub.
 
-myfunction(_Ref) ->
+delete(_Ref) ->
     ?nif_stub.
+
+dostring(_Ref, _Str) ->
+    ?nif_stub.
+
+respond(_Ref, _Res) ->
+    ?nif_stub.
+
+xdostring(Ref, Str) ->
+    case dostring(Ref, Str) of
+	yield ->
+	    receive
+		{erluanif_apply, M, F, A} ->
+		    io:format(user, "erluanif call erlang: ~p ~p ~p~n", [M, F, A]),
+		    respond(Ref, "hello from erlang"),
+		    ok
+	    end;
+	Other ->
+	    Other
+    end.
 
 %% ===================================================================
 %% EUnit tests
@@ -37,7 +57,10 @@ myfunction(_Ref) ->
 
 basic_test() ->
     {ok, Ref} = new(),
-    ?assertEqual(ok, myfunction(Ref)),
-    ?assertEqual(ok, notok).
+    ?assertMatch({error, _}, dostring(Ref, "package.path >< package.path..';abc/?.lua'")),
+    ?assertEqual(ok, dostring(Ref, "print('hello world lua!')")),
+    ?assertMatch({error, _}, dostring(Ref, <<"require('main');">>)),
+    ?assertEqual(ok, xdostring(Ref, <<"print(erlang.apply(erlang.nifenv, 'io', 'format', {'abcde'}))">>)),
+    ?assertEqual(ok, delete(Ref)).
 
 -endif.
