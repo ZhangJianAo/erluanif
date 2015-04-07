@@ -37,18 +37,24 @@ dostring(_Ref, _Str) ->
 respond(_Ref, _Res) ->
     ?nif_stub.
 
-xdostring(Ref, Str) ->
-    case dostring(Ref, Str) of
-	yield ->
-	    receive
-		{erluanif_apply, M, F, A} ->
-		    io:format(user, "erluanif call erlang: ~p ~p ~p~n", [M, F, A]),
-		    respond(Ref, "hello from erlang"),
-		    ok
-	    end;
-	Other ->
-	    Other
-    end.
+call(_Res, _FunName, _Args) ->
+    ?nif_stub.
+
+callfunc(Res, FunName, Args) ->
+    lua_return(call(Res, FunName, Args)).
+
+eval(Ref, Str) ->
+    lua_return(dostring(Ref, Str)).
+
+lua_return({yield, Ref}) ->
+    receive
+	{erluanif_apply, M, F, A} ->
+	    Ret = apply(M, F, A),
+	    io:format(user, "erluanif call erlang: ~p ~p ~p ~p~n", [M, F, A, Ret]),
+	    lua_return(respond(Ref, Ret))
+    end;
+lua_return(Other) ->    
+    Other.
 
 %% ===================================================================
 %% EUnit tests
@@ -60,7 +66,9 @@ basic_test() ->
     ?assertMatch({error, _}, dostring(Ref, "package.path >< package.path..';abc/?.lua'")),
     ?assertEqual(ok, dostring(Ref, "print('hello world lua!')")),
     ?assertMatch({error, _}, dostring(Ref, <<"require('main');">>)),
-    ?assertEqual(ok, xdostring(Ref, <<"print(erlang.apply(erlang.nifenv, 'io', 'format', {'abcde'}))">>)),
+    ?assertEqual(ok, eval(Ref, <<"print(erlang.apply(erlang.nifenv, 'io', 'format', {'abcde'}))">>)),
+    ?assertEqual(ok, dostring(Ref, <<"function test(msg) print(msg); print(erlang.apply(erlang.nifenv, 'io', 'format', {'abcde'})) end">>)),
+    ?assertEqual(ok, callfunc(Ref, <<"test">>, [<<"heihei">>])),
     ?assertEqual(ok, delete(Ref)).
 
 -endif.
