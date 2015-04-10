@@ -3,7 +3,11 @@
 #include <lualib.h>
 #include <string.h>
 #include <assert.h>
-#include "erl_nif.h"
+#include <erl_nif.h>
+
+//enif_make_existing_atom_len will crash when input string are too long.
+//so move erlang internal define here, actual defien in erlang are at: erts/emulator/beam/atom.h
+#define MAX_ATOM_SZ_FROM_LATIN1 255
 
 static ErlNifResourceType* erluanif_RESOURCE = NULL;
 
@@ -45,7 +49,8 @@ static ERL_NIF_TERM lua_to_term(ErlNifEnv* env, lua_State* L, int pos)
 		size_t len;
 		const char* str = lua_tolstring(L, pos, &len);
 		ERL_NIF_TERM atom;
-		if (enif_make_existing_atom(env, str, &atom, ERL_NIF_LATIN1)) {
+		if (len < MAX_ATOM_SZ_FROM_LATIN1 &&
+		    enif_make_existing_atom_len(env, str, len, &atom, ERL_NIF_LATIN1)) {
 			return atom;
 		} else {
 			ErlNifBinary bin;
