@@ -2,7 +2,11 @@
 
 -export([new/0,
 	 delete/1,
-	 dostring/2]).
+	 dostring/2,
+	 respond/2,
+	 call/3]).
+
+-export([add_package_path/2, callfunc/3, eval/2]).
 
 -on_load(init/0).
 
@@ -40,6 +44,15 @@ respond(_Ref, _Res) ->
 call(_Res, _FunName, _Args) ->
     ?nif_stub.
 
+add_package_path(Ref, Path) ->
+    PackPath = case filelib:is_dir(Path) of
+		   true ->
+		       filename:join(Path, <<"?.lua">>);
+		   false ->
+		       Path
+	       end,
+    dostring(Ref, <<"package.path = package.path..';",PackPath/binary,"'">>).
+
 callfunc(Res, FunName, Args) ->
     lua_return(call(Res, FunName, Args)).
 
@@ -50,7 +63,6 @@ lua_return({yield, Ref}) ->
     receive
 	{erluanif_apply, M, F, A} ->
 	    Ret = apply(M, F, A),
-	    io:format(user, "erluanif call erlang: ~p ~p ~p ~p~n", [M, F, A, Ret]),
 	    lua_return(respond(Ref, Ret))
     end;
 lua_return(Other) ->    

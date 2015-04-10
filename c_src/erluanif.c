@@ -2,6 +2,7 @@
 #include <lauxlib.h>
 #include <lualib.h>
 #include <string.h>
+#include <assert.h>
 #include "erl_nif.h"
 
 static ErlNifResourceType* erluanif_RESOURCE = NULL;
@@ -16,14 +17,16 @@ static ERL_NIF_TERM erluanif_delete(ErlNifEnv* env, int argc, const ERL_NIF_TERM
 static ERL_NIF_TERM erluanif_dostring(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]);
 
 static int e_apply_continue(lua_State *L) {
-	printf("apply continue called\n");
 	return 1;
 }
 
 static ERL_NIF_TERM lua_to_term(ErlNifEnv* env, lua_State* L, int pos)
 {
 	int luat = lua_type(L, pos);
-	if (LUA_TBOOLEAN == luat) {
+	if (LUA_TNIL == luat) {
+		return enif_make_atom(env, "nil");
+	}
+	else if (LUA_TBOOLEAN == luat) {
 		if (lua_toboolean(L, pos)) {
 			return enif_make_atom(env, "true");
 		} else {
@@ -65,7 +68,6 @@ static ERL_NIF_TERM lua_to_term(ErlNifEnv* env, lua_State* L, int pos)
 			list = enif_make_list_cell(env, item, list);
 			lua_pop(L, 1);
 		}
-		lua_pop(L, 1);
 		enif_make_reverse_list(env, list, &list);
 		return list;
 	}
@@ -81,12 +83,11 @@ static int e_apply(lua_State *L) {
 
 	ErlNifEnv *env = lua_touserdata(L, 1);
 	if (NULL == env) {
-		luaL_error(L, "erlang.apply first arg must be ErlNifEnv");
+		luaL_error(L, "erlang.apply first arg must be erlang.nifenv");
 	}
 	
 	module = luaL_checkstring(L, 2);
 	func = luaL_checkstring(L, 3);
-	printf("apply get called: %s, %s\n", module, func);
 
 	ErlNifEnv* msg_env = enif_alloc_env();
 	enif_send(env, enif_self(env, &selfpid), msg_env,
@@ -144,13 +145,33 @@ static void term_to_lua(ErlNifEnv* env, ERL_NIF_TERM term, lua_State* L)
 		len++; // for terminating null character
 		buff = malloc(len);
 		enif_get_atom(env, term, buff, len, ERL_NIF_LATIN1);
-		lua_pushstring(L, buff);
+		if (strcmp("null", buff) == 0) {
+			lua_pushnil(L);
+		} else {
+			lua_pushstring(L, buff);
+		}
 		free(buff);
 	}
 	else if (enif_is_binary(env, term)) {
 		ErlNifBinary bin;
 		if (!enif_inspect_binary(env, term, &bin)) { return; }
 		lua_pushlstring(L, (char*)bin.data, bin.size);
+	}
+	else if (enif_is_number(env, term)) {
+		int i;
+		double d;
+		if (enif_get_int(env, term, &i)) {
+			lua_pushinteger(L, i);
+		}
+		else if (enif_get_double(env, term, &d)) {
+			lua_pushnumber(L, d);
+		}
+		else {
+			printf("can't convert erlang number to lua");
+		}
+	}
+	else {
+		printf("can't convert erlang term to lua");
 	}
 }
 
@@ -209,7 +230,6 @@ static ERL_NIF_TERM erluanif_dostring(ErlNifEnv* env, int argc, const ERL_NIF_TE
 	lua_setfield(handle->L, -2, "nifenv");
 	lua_pop(handle->L, 1);
 	
-	printf("lua code:%d %s\n", strlen, buff);
 	if (LUA_OK != luaL_loadstring(handle->L, buff)) {
 		free(buff);
 		return enif_make_tuple2(env, enif_make_atom(env, "error"),
@@ -236,6 +256,54 @@ error:
 	return enif_make_atom(env, "error");
 }
 
+static int lua_push_function(lua_State* L, char* funcname)
+{
+	int luatop = lua_gettop(L);
+	
+	lua_getglobal(L, funcname);
+	if (lua_isfunction(L, -1)) { return 1; }
+
+	funcname = strdup(funcname);
+	
+	char* dot = strchr(funcname, '.');
+	if (NULL != dot) {
+		*dot = '\0';
+		lua_getglobal(L, funcname);
+		if (lua_istable(L, -1)) {
+			while (NULL != dot) {
+				char* field = dot + 1;
+				dot = strchr(field, '.');
+				if (NULL != dot) { *dot = '\0'; }
+				lua_getfield(L, -1, field);
+				if (! lua_istable(L, -1)) { break; }
+			}
+		}
+	}
+
+	if (lua_isfunction(L, -1)) {
+		return 1;
+	} else {
+		lua_pop(L, lua_gettop(L) - luatop);
+		assert(luatop == lua_gettop(L));
+		return 0;
+	}
+}
+
+static ERL_NIF_TERM luaret_to_term(ErlNifEnv* env, lua_State* L)
+{
+	int luatop = lua_gettop(L);
+	if (luatop > 0) {
+		return enif_make_tuple2(env,
+					enif_make_atom(env, "ok"),
+					lua_to_term(env, L, luatop)
+			);
+	}
+	else {
+		return enif_make_atom(env, "ok");
+	}
+
+}
+
 static ERL_NIF_TERM erluanif_call(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
 	if (argc != 3) {
@@ -257,7 +325,16 @@ static ERL_NIF_TERM erluanif_call(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 	lua_setfield(handle->L, -2, "nifenv");
 	lua_pop(handle->L, 1);
 
-	lua_getglobal(handle->L, funcname);
+	if (!lua_push_function(handle->L, funcname)) {
+		free(funcname);
+		char error_info[256];
+		int printlen = snprintf(error_info, 256, "unknow function:%s", funcname);
+		if (printlen < 0 || printlen >= 256) {
+			sprintf(error_info, "unknow function name");
+		}
+		return enif_make_tuple2(env, enif_make_atom(env, "error"),
+					enif_make_string(env, error_info, ERL_NIF_LATIN1));
+	}
 
 	unsigned func_argc;
 	enif_get_list_length(env, argv[2], &func_argc);
@@ -269,11 +346,9 @@ static ERL_NIF_TERM erluanif_call(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 	}
 
 	int pcallret = lua_resume(handle->L, NULL, func_argc);
-	printf("resume ret:%d\n", pcallret);
-	
 	free(funcname);
 	if (LUA_OK == pcallret) {
-		return enif_make_atom(env, "ok");
+		return luaret_to_term(env, handle->L);
 	}
 	else if (LUA_YIELD == pcallret) {
 		return enif_make_tuple2(env,
@@ -298,7 +373,7 @@ static ERL_NIF_TERM erluanif_respond(ErlNifEnv* env, int argc, const ERL_NIF_TER
 	term_to_lua(env, argv[1], handle->L);
 	int luaret = lua_resume(handle->L, NULL, 0);
 	if (LUA_OK == luaret) {
-		return enif_make_atom(env, "ok");
+		return luaret_to_term(env, handle->L);
 	}
 	else if (LUA_YIELD == luaret) {
 		return enif_make_tuple2(env,
